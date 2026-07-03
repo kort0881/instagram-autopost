@@ -138,24 +138,16 @@ class InstagramPoster:
             return None
 
     def _upload_to_imgbb(self, image_path):
-        """Бесплатный хостинг изображений"""
-        try:
-            with open(image_path, 'rb') as f:
-                resp = requests.post(
-                    "https://api.imgbb.com/1/upload",
-                    data={"key": "REMOVED_IMGBB_KEY"},
-                    files={"image": f},
-                    timeout=30
-                )
-            if resp.ok:
-                url = resp.json().get('data', {}).get('url')
-                if url:
-                    print(f"☁️ ImgBB: {url}")
-                    return url
-            return None
-        except Exception as e:
-            print(f"⚠️ imgbb error: {e}")
-            return None
+        return None
+
+    def _get_image_url(self, image_path):
+        """Получить публичный URL для изображения через доступные хостинги"""
+        # 1. Cloudinary
+        if Config.CLOUDINARY_CLOUD_NAME:
+            url = self._upload_to_cloudinary(image_path)
+            if url:
+                return url
+        return None
 
     def _publish_media(self, media_url, caption, media_type='VIDEO'):
         params = {
@@ -184,8 +176,8 @@ class InstagramPoster:
     def run(self):
         print(f"🚀 Запуск {datetime.now()}")
 
-        # Чередование: 70% reels, 30% posts
-        post_type = random.choices(['reel', 'post'], weights=[0.7, 0.3])[0]
+        # Чередование: 90% reels, 10% posts (посты только если есть Cloudinary)
+        post_type = random.choices(['reel', 'post'], weights=[0.9, 0.1])[0]
 
         exclude = self.published.get('reels', []) + self.published.get('posts', [])
         fact = self.generator.get_random_fact(exclude)
@@ -214,12 +206,7 @@ class InstagramPoster:
             image_path = self._generate_post_image(fact)
 
             if image_path:
-                # Публикуем через Cloudinary или imgbb
-                public_url = None
-                if Config.CLOUDINARY_CLOUD_NAME:
-                    public_url = self._upload_to_cloudinary(image_path)
-                if not public_url:
-                    public_url = self._upload_to_imgbb(image_path)
+                public_url = self._get_image_url(image_path)
 
                 if public_url:
                     try:
