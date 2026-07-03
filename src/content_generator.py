@@ -136,31 +136,51 @@ class ContentGenerator:
         return random.choice(available) if available else None
 
     def generate_caption(self, fact, post_type='post'):
+        style = random.choice(['question', 'statement', 'humor', 'hook'])
+
+        if style == 'question':
+            hook = "❓ А вы знали?"
+            question = "А вы слышали что-то подобное? Пишите в комментариях!"
+        elif style == 'humor':
+            hook = "😱 Вот это поворот!"
+            question = "Представьте себе эту картину — напишите в комментариях, что бы вы сделали?"
+        elif style == 'hook':
+            hook = "🔥 Это изменит ваше представление!"
+            question = "Теперь вы знаете то, что знают единицы. Делитесь с друзьями!"
+        else:
+            hook = "📌 Малоизвестный факт"
+            question = "Как вам такой факт? Ставьте 👍 если было интересно!"
+
         if post_type == 'reel':
             return f"""🔥 {fact['title']}
 
 {fact['text']}
 
-А вы знали об этом? 👇
+{question} 👇
 
 {' '.join(fact.get('tags', []))}
 
-#история #факты #загадки #тайны #познавательно"""
+#история #факты #загадки #тайны #познавательно #reels"""
         else:
             return f"""📜 {fact['title']}
 
 {fact['text']}
 
-❓ А вы слышали что-то подобное? Пишите в комментариях!
+{hook}
+
+{question}
 
 {' '.join(fact.get('tags', []))}
 
-#история #интересныефакты #наука #познавательно"""
+#история #интересныефакты #наука #познавательно #пост"""
 
 
 def scrape_youtube_facts():
     """Парсинг видео автора для наполнения facts.json"""
-    from bs4 import BeautifulSoup
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        BeautifulSoup = None
 
     channels = [
         "https://www.youtube.com/@UCBwMQht541r-bxpy-wPSLpw",
@@ -173,7 +193,6 @@ def scrape_youtube_facts():
             resp = requests.get(channel_url, timeout=15, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             })
-            soup = BeautifulSoup(resp.text, 'html.parser')
             titles = re.findall(r'"title":{"runs":\[{"text":"([^"]+)"', resp.text)
             for t in titles[:20]:
                 if t and len(t) > 10:

@@ -9,6 +9,7 @@ from config import Config
 from content_generator import ContentGenerator
 from agnes_client import AgnesClient
 
+
 class InstagramPoster:
     def __init__(self):
         Config.validate()
@@ -32,17 +33,42 @@ class InstagramPoster:
 
     def _upload_to_cloudinary(self, image_path):
         if not Config.CLOUDINARY_CLOUD_NAME:
-            print("⚠️ Cloudinary не настроен")
+            print("⚠️ Cloudinary не настроен — пропускаем загрузку")
             return None
-        import cloudinary
-        import cloudinary.uploader
-        cloudinary.config(
-            cloud_name=Config.CLOUDINARY_CLOUD_NAME,
-            api_key=Config.CLOUDINARY_API_KEY,
-            api_secret=Config.CLOUDINARY_API_SECRET
-        )
-        result = cloudinary.uploader.upload(image_path)
-        return result.get('secure_url')
+        try:
+            import cloudinary
+            import cloudinary.uploader
+            cloudinary.config(
+                cloud_name=Config.CLOUDINARY_CLOUD_NAME,
+                api_key=Config.CLOUDINARY_API_KEY,
+                api_secret=Config.CLOUDINARY_API_SECRET
+            )
+            result = cloudinary.uploader.upload(
+                image_path,
+                folder="instagram_autopost",
+                resource_type="image"
+            )
+            url = result.get('secure_url')
+            print(f"☁️ Загружено на Cloudinary: {url}")
+            return url
+        except Exception as e:
+            print(f"⚠️ Cloudinary error: {e}")
+            return None
+
+    def _fetch_pinterest_image(self, query):
+        """Попытка достать картинку из Pinterest по теме факта"""
+        try:
+            from pinterest_parser import PinterestParser
+            parser = PinterestParser(cache_dir=str(Config.CACHE_DIR))
+            images = parser.search_pins(query, limit=3)
+            if images:
+                local_path = parser.download_image(images[0])
+                if local_path:
+                    return local_path
+            return None
+        except Exception as e:
+            print(f"⚠️ Pinterest error: {e}")
+            return None
 
     def _publish_media(self, media_url, caption, media_type='VIDEO'):
         params = {
@@ -71,8 +97,8 @@ class InstagramPoster:
     def run(self):
         print(f"🚀 Запуск {datetime.now()}")
 
-        # Выбираем тип: чередуем reels и посты
-        post_type = random.choice(['reel', 'post'])
+        # Чередование: 60% reels, 40% posts
+        post_type = random.choices(['reel', 'post'], weights=[0.6, 0.4])[0]
 
         exclude = self.published.get('reels', []) + self.published.get('posts', [])
         fact = self.generator.get_random_fact(exclude)
@@ -97,15 +123,37 @@ class InstagramPoster:
                 print(f"❌ Ошибка генерации Reels: {e}")
                 return
         else:
-            print("📸 Публикация текстового поста...")
-            # Для поста без изображения используем заглушку
-            print("⚠️ Посты с картинками требуют хостинга (Cloudinary или Pinterest)")
-            print("📝 Пост сохранён в лог без публикации (только текст)")
-            # Можно было бы использовать картинку-заглушку, но пропускаем
+            print("📸 Публикация поста с изображением...")
+
+            # Пытаемся достать картинку: Pinterest -> Cloudinary -> заглушка
+            image_url = None
+
+            # 1. Пробуем Pinterest
+            pinterest_image = self._fetch_pinterest_image(fact['title'])
+            if pinterest_image:
+                print(f"🖼️ Изображение найдено на Pinterest: {pinterest_image}")
+                # 2. Загружаем на Cloudinary если настроен
+                if Config.CLOUDINARY_CLOUD_NAME:
+                    cloud_url = self._upload_to_cloudinary(pinterest_image)
+                    if cloud_url:
+                        image_url = cloud_url
+                else:
+                    image_url = pinterest_image
+
+            if image_url:
+                try:
+                    self._publish_media(image_url, caption, 'IMAGE')
+                    print(f"✅ Пост опубликован с изображением")
+                except Exception as e:
+                    print(f"❌ Ошибка публикации поста: {e}")
+                    return
+            else:
+                print("⚠️ Нет изображения для поста. Публикация отложена.")
+                print("📝 Совет: настрой Cloudinary или Pinterest токен в Secrets")
 
         self.published.setdefault(post_type + 's', []).append(fact['title'])
         self._save_log()
-        print(f"✅ Опубликовано: {fact['title']}")
+        print(f"✅ Готово: {fact['title']}")
 
 
 if __name__ == "__main__":
