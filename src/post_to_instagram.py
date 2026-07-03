@@ -5,12 +5,22 @@ import random
 import requests
 from pathlib import Path
 from datetime import datetime
+from io import BytesIO
 from config import Config
 from content_generator import ContentGenerator
 from agnes_client import AgnesClient
 
 
 class InstagramPoster:
+    CATEGORY_IMAGES = {
+        "historical": "ancient+history+archaeology",
+        "science": "science+technology+discovery",
+        "mystery": "mysterious+dark+paranormal",
+        "archaeology": "excavation+ruins+artifacts",
+        "psychology": "brain+mind+consciousness",
+        "anatomy": "human+body+anatomy",
+    }
+
     def __init__(self):
         Config.validate()
         self.config = Config()
@@ -31,9 +41,81 @@ class InstagramPoster:
         with open(self.log_file, 'w', encoding='utf-8') as f:
             json.dump(self.published, f, ensure_ascii=False, indent=2)
 
+    def _generate_post_image(self, fact):
+        """Генерация изображения для поста: красим фон, накладываем текст"""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            import textwrap
+
+            # Определяем цвет фона по категории
+            colors = {
+                "historical": (45, 55, 72),
+                "science": (30, 60, 80),
+                "mystery": (25, 20, 35),
+                "archaeology": (55, 45, 30),
+                "psychology": (40, 35, 55),
+                "anatomy": (50, 30, 35),
+            }
+            # Определяем категорию факта
+            category = "historical"
+            for cat_key in colors:
+                if any(tag in fact.get('tags', []) for tag in [f"#{cat_key}", f"#{cat_key[:4]}"]):
+                    category = cat_key
+                    break
+
+            bg_color = colors.get(category, (30, 30, 40))
+            img = Image.new('RGB', (1080, 1080), bg_color)
+            draw = ImageDraw.Draw(img)
+
+            # Пробуем шрифт
+            font_paths = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ]
+            font = None
+            for fp in font_paths:
+                if Path(fp).exists():
+                    font = ImageFont.truetype(fp, 42)
+                    break
+            if not font:
+                font = ImageFont.load_default()
+
+            # Заголовок
+            title = fact['title'][:120]
+            lines = textwrap.wrap(title, width=25)
+            y = 150
+            for line in lines[:4]:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                tw = bbox[2] - bbox[0]
+                draw.text(((1080 - tw) // 2, y), line, fill=(255, 255, 255), font=font)
+                y += 55
+
+            # Текст факта
+            y += 40
+            body_font = ImageFont.truetype(font_paths[1] if len(font_paths) > 1 and Path(font_paths[1]).exists() else font_paths[0], 32) \
+                if Path(font_paths[1]).exists() else ImageFont.load_default()
+            text_lines = textwrap.wrap(fact['text'], width=35)
+            for line in text_lines[:12]:
+                bbox = draw.textbbox((0, 0), line, font=body_font)
+                tw = bbox[2] - bbox[0]
+                draw.text(((1080 - tw) // 2, y), line, fill=(220, 220, 220), font=body_font)
+                y += 40
+
+            # Сохраняем
+            output_path = Path(Config.POSTS_DIR) / f"post_{datetime.now().strftime('%Y%m%d%H%M%S')}.png"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            img.save(output_path, quality=95)
+            return str(output_path)
+
+        except ImportError:
+            print("⚠️ Pillow не установлен. Картинка не сгенерирована.")
+            return None
+        except Exception as e:
+            print(f"⚠️ Ошибка генерации изображения: {e}")
+            return None
+
     def _upload_to_cloudinary(self, image_path):
         if not Config.CLOUDINARY_CLOUD_NAME:
-            print("⚠️ Cloudinary не настроен — пропускаем загрузку")
             return None
         try:
             import cloudinary
@@ -49,71 +131,31 @@ class InstagramPoster:
                 resource_type="image"
             )
             url = result.get('secure_url')
-            print(f"☁️ Загружено на Cloudinary: {url}")
+            print(f"☁️ Cloudinary: {url}")
             return url
         except Exception as e:
             print(f"⚠️ Cloudinary error: {e}")
             return None
 
-    def _fetch_pinterest_image(self, query):
-        """Попытка достать картинку из Pinterest по теме факта"""
-        try:
-            from pinterest_parser import PinterestParser
-            parser = PinterestParser(cache_dir=str(Config.CACHE_DIR))
-            images = parser.search_pins(query, limit=3)
-            if images:
-                local_path = parser.download_image(images[0])
-                if local_path:
-                    return local_path
-            return None
-        except Exception as e:
-            print(f"⚠️ Pinterest error: {e}")
-            return None
-
     def _upload_to_imgbb(self, image_path):
-        """Бесплатная загрузка изображения на imgbb.com (без ключа — лимит 100 загрузок/день)"""
+        """Бесплатный хостинг изображений"""
         try:
-            from pathlib import Path
-            img_path = Path(image_path)
-            if not img_path.exists():
-                return None
-            with open(img_path, 'rb') as f:
+            with open(image_path, 'rb') as f:
                 resp = requests.post(
                     "https://api.imgbb.com/1/upload",
-                    data={
-                        "key": "REMOVED_IMGBB_KEY"  # публичный ключ imgbb
-                    },
+                    data={"key": "REMOVED_IMGBB_KEY"},
                     files={"image": f},
                     timeout=30
                 )
             if resp.ok:
                 url = resp.json().get('data', {}).get('url')
                 if url:
-                    print(f"☁️ Загружено на imgbb: {url}")
+                    print(f"☁️ ImgBB: {url}")
                     return url
             return None
         except Exception as e:
             print(f"⚠️ imgbb error: {e}")
             return None
-
-    def _ensure_public_url(self, image_path):
-        """Преобразовать локальный путь в публичный URL"""
-        # 1. Пробуем Cloudinary
-        if Config.CLOUDINARY_CLOUD_NAME:
-            url = self._upload_to_cloudinary(image_path)
-            if url:
-                return url
-
-        # 2. Fallback на imgbb
-        url = self._upload_to_imgbb(image_path)
-        if url:
-            return url
-
-        # 3. Если локальный путь уже URL (например, прямая ссылка с Pinterest)
-        if image_path.startswith('http'):
-            return image_path
-
-        return None
 
     def _publish_media(self, media_url, caption, media_type='VIDEO'):
         params = {
@@ -142,13 +184,13 @@ class InstagramPoster:
     def run(self):
         print(f"🚀 Запуск {datetime.now()}")
 
-        # Чередование: 60% reels, 40% posts
-        post_type = random.choices(['reel', 'post'], weights=[0.6, 0.4])[0]
+        # Чередование: 70% reels, 30% posts
+        post_type = random.choices(['reel', 'post'], weights=[0.7, 0.3])[0]
 
         exclude = self.published.get('reels', []) + self.published.get('posts', [])
         fact = self.generator.get_random_fact(exclude)
         if not fact:
-            print("❌ Нет новых неопубликованных фактов. Сброс лога.")
+            print("❌ Нет новых фактов. Сброс лога.")
             self.published = {"reels": [], "posts": []}
             self._save_log()
             fact = self.generator.get_random_fact()
@@ -162,39 +204,37 @@ class InstagramPoster:
                     f"{fact['title']}. {fact['text']}",
                     fact['title']
                 )
-                print(f"📹 Видео сгенерировано: {video_url}")
+                print(f"📹 Видео: {video_url}")
                 self._publish_media(video_url, caption, 'VIDEO')
             except Exception as e:
-                print(f"❌ Ошибка генерации Reels: {e}")
+                print(f"❌ Ошибка Reels: {e}")
                 return
         else:
-            print("📸 Публикация поста с изображением...")
+            print("📸 Генерация изображения для поста...")
+            image_path = self._generate_post_image(fact)
 
-            image_url = None
+            if image_path:
+                # Публикуем через Cloudinary или imgbb
+                public_url = None
+                if Config.CLOUDINARY_CLOUD_NAME:
+                    public_url = self._upload_to_cloudinary(image_path)
+                if not public_url:
+                    public_url = self._upload_to_imgbb(image_path)
 
-            # 1. Пробуем Pinterest
-            pinterest_image = self._fetch_pinterest_image(fact['title'])
-            if pinterest_image:
-                print(f"🖼️ Изображение найдено: {pinterest_image}")
-                # 2. Преобразуем локальный путь в публичный URL
-                image_url = self._ensure_public_url(pinterest_image)
-                if image_url:
-                    print(f"🌐 Публичный URL: {image_url}")
+                if public_url:
+                    try:
+                        self._publish_media(public_url, caption, 'IMAGE')
+                        print(f"✅ Пост опубликован")
+                    except Exception as e:
+                        print(f"❌ Ошибка публикации: {e}")
+                        return
                 else:
-                    # Если ни Cloudinary ни imgbb не сработали — используем прямую ссылку Pinterest если это URL
-                    if pinterest_image.startswith('http'):
-                        image_url = pinterest_image
-
-            if image_url:
-                try:
-                    self._publish_media(image_url, caption, 'IMAGE')
-                    print(f"✅ Пост опубликован с изображением")
-                except Exception as e:
-                    print(f"❌ Ошибка публикации поста: {e}")
+                    print("⚠️ Нет хостинга для изображения. Пост пропущен.")
+                    print("📝 Настрой Cloudinary Secrets для загрузки изображений")
                     return
             else:
-                print("⚠️ Нет изображения для поста. Публикация отложена.")
-                print("📝 Совет: настрой Cloudinary или Pinterest токен в Secrets")
+                print("⚠️ Не удалось сгенерировать изображение. Пост пропущен.")
+                return
 
         self.published.setdefault(post_type + 's', []).append(fact['title'])
         self._save_log()
