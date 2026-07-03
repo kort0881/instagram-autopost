@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+data/images_cache/
+content/posts/
+*.log
+.DS_Store
