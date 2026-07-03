@@ -22,10 +22,11 @@ class AgnesClient:
         # Пробуем стандартный OpenAI-совместимый эндпоинт для генерации
         # Agnes поддерживает text-to-video через model: agnes-video-*
         payload = {
-            "model": "agnes-video-1",
+            "model": "agnes-video-v2.0",
             "prompt": f"{title or 'Исторический факт'}. {text}",
             "duration": 30,
-            "style": "mystery"
+            "style": "mystery",
+            "size": "1080x1920"
         }
 
         if voice:
