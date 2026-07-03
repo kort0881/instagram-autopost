@@ -70,6 +70,51 @@ class InstagramPoster:
             print(f"⚠️ Pinterest error: {e}")
             return None
 
+    def _upload_to_imgbb(self, image_path):
+        """Бесплатная загрузка изображения на imgbb.com (без ключа — лимит 100 загрузок/день)"""
+        try:
+            from pathlib import Path
+            img_path = Path(image_path)
+            if not img_path.exists():
+                return None
+            with open(img_path, 'rb') as f:
+                resp = requests.post(
+                    "https://api.imgbb.com/1/upload",
+                    data={
+                        "key": "REMOVED_IMGBB_KEY"  # публичный ключ imgbb
+                    },
+                    files={"image": f},
+                    timeout=30
+                )
+            if resp.ok:
+                url = resp.json().get('data', {}).get('url')
+                if url:
+                    print(f"☁️ Загружено на imgbb: {url}")
+                    return url
+            return None
+        except Exception as e:
+            print(f"⚠️ imgbb error: {e}")
+            return None
+
+    def _ensure_public_url(self, image_path):
+        """Преобразовать локальный путь в публичный URL"""
+        # 1. Пробуем Cloudinary
+        if Config.CLOUDINARY_CLOUD_NAME:
+            url = self._upload_to_cloudinary(image_path)
+            if url:
+                return url
+
+        # 2. Fallback на imgbb
+        url = self._upload_to_imgbb(image_path)
+        if url:
+            return url
+
+        # 3. Если локальный путь уже URL (например, прямая ссылка с Pinterest)
+        if image_path.startswith('http'):
+            return image_path
+
+        return None
+
     def _publish_media(self, media_url, caption, media_type='VIDEO'):
         params = {
             "media_type": media_type,
@@ -125,20 +170,20 @@ class InstagramPoster:
         else:
             print("📸 Публикация поста с изображением...")
 
-            # Пытаемся достать картинку: Pinterest -> Cloudinary -> заглушка
             image_url = None
 
             # 1. Пробуем Pinterest
             pinterest_image = self._fetch_pinterest_image(fact['title'])
             if pinterest_image:
-                print(f"🖼️ Изображение найдено на Pinterest: {pinterest_image}")
-                # 2. Загружаем на Cloudinary если настроен
-                if Config.CLOUDINARY_CLOUD_NAME:
-                    cloud_url = self._upload_to_cloudinary(pinterest_image)
-                    if cloud_url:
-                        image_url = cloud_url
+                print(f"🖼️ Изображение найдено: {pinterest_image}")
+                # 2. Преобразуем локальный путь в публичный URL
+                image_url = self._ensure_public_url(pinterest_image)
+                if image_url:
+                    print(f"🌐 Публичный URL: {image_url}")
                 else:
-                    image_url = pinterest_image
+                    # Если ни Cloudinary ни imgbb не сработали — используем прямую ссылку Pinterest если это URL
+                    if pinterest_image.startswith('http'):
+                        image_url = pinterest_image
 
             if image_url:
                 try:
