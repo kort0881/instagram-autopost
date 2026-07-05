@@ -65,8 +65,8 @@ class AgnesClient:
         for attempt in range(max_attempts):
             time.sleep(5)
 
+            status_data = None
             try:
-                # Правильный эндпоинт для проверки статуса
                 status_resp = requests.get(
                     f"{self.BASE_URL}/agnesapi",
                     params={"video_id": video_id},
@@ -76,42 +76,40 @@ class AgnesClient:
                 if not status_resp.ok:
                     print(f"  ⚠️ Статус {status_resp.status_code}, повторная попытка...")
                     continue
-
                 status_data = status_resp.json()
-                status = status_data.get("status", "unknown")
-                progress = status_data.get("progress", 0)
-
-                print(f"  ⏳ Статус: {status}, прогресс: {progress}%")
-
-                # Успешные статусы (список синонимов для надёжности)
-                if status.lower() in ("succeeded", "success", "completed", "done"):
-                    # Ищем URL видео в ответе
-                    video_url = (
-                        status_data.get("url")
-                        or status_data.get("video_url")
-                        or (status_data.get("output") or {}).get("video_url")
-                        or (status_data.get("data") or {}).get("url")
-                    )
-                    if video_url:
-                        print(f"  ✅ Видео готово: {video_url}")
-                        return video_url
-                    else:
-                        raise Exception(f"Видео готово, но URL не найден: {status_data}")
-
-                # Статусы ошибок
-                if status.lower() in ("failed", "error", "cancelled"):
-                    error_msg = status_data.get("error") or status_data.get("message") or "Неизвестная ошибка"
-                    raise Exception(f"Генерация видео не удалась: {error_msg}")
-
-                # Иначе статус "queued" или "in_progress" — продолжаем ждать
-
             except requests.exceptions.Timeout:
                 print(f"  ⏳ Таймаут при проверке статуса, попытка {attempt+1}/{max_attempts}")
                 continue
             except Exception as e:
-                # Если возникла ошибка в polling, логируем и пробуем снова (кроме критичных)
-                print(f"  ⚠️ Ошибка при polling: {e}, повторная попытка...")
+                print(f"  ⚠️ Ошибка HTTP/JSON: {e}, повторная попытка...")
                 continue
+
+            status = status_data.get("status", "unknown")
+            progress = status_data.get("progress", 0)
+            print(f"  ⏳ Статус: {status}, прогресс: {progress}%")
+
+            # Успешные статусы
+            if status.lower() in ("succeeded", "success", "completed", "done"):
+                video_url = (
+                    status_data.get("url")
+                    or status_data.get("video_url")
+                    or status_data.get("remixed_from_video_id")
+                    or (status_data.get("output") or {}).get("video_url")
+                    or (status_data.get("data") or {}).get("url")
+                )
+                if video_url:
+                    print(f"  ✅ Видео готово: {video_url}")
+                    return video_url
+                else:
+                    print(f"  ❌ Видео готово, но URL не найден: {status_data}")
+                    raise Exception(f"Видео готово, но URL не найден")
+
+            # Статусы ошибок
+            if status.lower() in ("failed", "error", "cancelled"):
+                error_msg = status_data.get("error") or status_data.get("message") or "Неизвестная ошибка"
+                raise Exception(f"Генерация видео не удалась: {error_msg}")
+
+            # Иначе статус "queued" или "in_progress" — продолжаем ждать
 
         raise Exception(f"Видео не сгенерировалось за {max_attempts * 5} секунд (video_id={video_id})")
 
