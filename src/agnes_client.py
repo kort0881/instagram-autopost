@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 import requests
 import time
+import os
 from config import Config
 
 
 class AgnesClient:
-    BASE_URL = "https://apihub.agnes-ai.com/v1"
+    BASE_URL = "https://apihub.agnes-ai.com"
 
     def __init__(self):
         self.api_key = Config.AGNES_API_KEY
+        if not self.api_key:
+            raise ValueError("AGNES_API_KEY не задан в конфиге")
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -16,63 +19,78 @@ class AgnesClient:
 
     def generate_video(self, text, title=None, voice=None, mode="manuscript"):
         """
-        Генерация видео через Agnes AI API.
-        Agnes использует асинхронную генерацию:
-        1. POST /video/generations → получаем task_id
-        2. GET /video/generations/{task_id} → ждём status=completed
-        3. Возвращаем URL готового видео
+        Генерация короткого вертикального видео (Reels) через Agnes AI API.
+        Использует официальный эндпоинт /v1/videos и корректный polling.
+        Возвращает URL готового видео.
         """
+        # Формируем промпт из заголовка и текста
+        prompt = f"{title or 'Исторический факт'}. {text}"
+
+        # Параметры для Reels (вертикальное видео 9:16)
         payload = {
             "model": "agnes-video-v2.0",
-            "prompt": f"{title or 'Исторический факт'}. {text}",
-            "duration": 30,
-            "style": "mystery",
-            "size": "1080x1920"
+            "prompt": prompt,
+            "height": 768,          # 768x1152 — стандарт для коротких вертикальных видео
+            "width": 1152,
+            "num_frames": 241,      # ~10 секунд при 24 fps (8*30+1 = 241)
+            "frame_rate": 24,
+            # Дополнительные параметры (опционально):
+            # "cfg_scale": 7,
+            # "seed": 42,
         }
 
         print(f"  → Отправка запроса на генерацию видео...")
-        response = requests.post(
-            f"{self.BASE_URL}/video/generations",
-            headers=self.headers,
-            json=payload,
-            timeout=60
-        )
-        response.raise_for_status()
+        try:
+            response = requests.post(
+                f"{self.BASE_URL}/v1/videos",
+                headers=self.headers,
+                json=payload,
+                timeout=60
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Ошибка при создании задачи: {e}")
+
         data = response.json()
 
-        task_id = data.get('task_id') or data.get('id')
-        if not task_id:
-            raise Exception(f"Нет task_id в ответе: {data}")
+        # Извлекаем video_id (в ответе может быть поле "id" или "video_id")
+        video_id = data.get("video_id") or data.get("id")
+        if not video_id:
+            raise Exception(f"Не удалось получить video_id из ответа: {data}")
 
-        print(f"  → Задача создана: {task_id}. Ожидание завершения...")
+        print(f"  → Задача создана, video_id: {video_id}. Ожидание завершения...")
 
-        # Polling статуса
-        max_attempts = 30
+        # Polling статуса через правильный эндпоинт
+        max_attempts = 60           # 60 попыток по 5 секунд = 5 минут
         for attempt in range(max_attempts):
             time.sleep(5)
+
             try:
+                # Правильный эндпоинт для проверки статуса
                 status_resp = requests.get(
-                    f"{self.BASE_URL}/video/generations/{task_id}",
+                    f"{self.BASE_URL}/agnesapi",
+                    params={"video_id": video_id},
                     headers=self.headers,
                     timeout=30
                 )
                 if not status_resp.ok:
-                    print(f"  ⚠️ Статус {status_resp.status_code}, продолжаем ожидание...")
+                    print(f"  ⚠️ Статус {status_resp.status_code}, повторная попытка...")
                     continue
 
                 status_data = status_resp.json()
-                status = status_data.get('status', 'unknown')
-                progress = status_data.get('progress', 0)
+                status = status_data.get("status", "unknown")
+                progress = status_data.get("progress", 0)
 
                 print(f"  ⏳ Статус: {status}, прогресс: {progress}%")
 
-                if status == 'completed':
-                    # Ищем URL видео
+                # Успешные статусы (список синонимов для надёжности)
+                if status.lower() in ("succeeded", "success", "completed", "done"):
+                    # Ищем URL видео в ответе
                     video_url = (
-                        status_data.get('url')
-                        or status_data.get('video_url')
-                        or (status_data.get('data') or [{}])[0].get('url')
-                        or (status_data.get('output') or {}).get('video_url')
+                        status_data.get("url")
+                        or status_data.get("video_url")
+                        or (status_data.get("output") or {}).get("video_url")
+                        or (status_data.get("data") or {}).get("url")
                     )
                     if video_url:
                         print(f"  ✅ Видео готово: {video_url}")
@@ -80,17 +98,37 @@ class AgnesClient:
                     else:
                         raise Exception(f"Видео готово, но URL не найден: {status_data}")
 
-                elif status in ('failed', 'error'):
-                    raise Exception(f"Генерация видео не удалась: {status_data.get('error', status_data)}")
+                # Статусы ошибок
+                if status.lower() in ("failed", "error", "cancelled"):
+                    error_msg = status_data.get("error") or status_data.get("message") or "Неизвестная ошибка"
+                    raise Exception(f"Генерация видео не удалась: {error_msg}")
 
-            except requests.Timeout:
+                # Иначе статус "queued" или "in_progress" — продолжаем ждать
+
+            except requests.exceptions.Timeout:
                 print(f"  ⏳ Таймаут при проверке статуса, попытка {attempt+1}/{max_attempts}")
                 continue
+            except Exception as e:
+                # Если возникла ошибка в polling, логируем и пробуем снова (кроме критичных)
+                print(f"  ⚠️ Ошибка при polling: {e}, повторная попытка...")
+                continue
 
-        raise Exception(f"Видео не сгенерировалось за {max_attempts * 5} секунд")
+        raise Exception(f"Видео не сгенерировалось за {max_attempts * 5} секунд (video_id={video_id})")
 
 
+# Блок для локального тестирования (запустите с реальным API-ключом)
 if __name__ == "__main__":
-    import os
-    os.environ["AGNES_API_KEY"] = "test"
-    print(AgnesClient().generate_video("Тест"))
+    # Для теста установите переменную окружения AGNES_API_KEY или пропишите в .env
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    try:
+        client = AgnesClient()
+        # Тестовый запрос с коротким текстом
+        video_url = client.generate_video(
+            text="В Древнем Египте кошек бальзамировали и хоронили с почестями.",
+            title="Кошки в Египте"
+        )
+        print(f"🎬 Видео получено: {video_url}")
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
