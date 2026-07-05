@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import sys
 import json
 import random
@@ -30,6 +31,7 @@ class InstagramPoster:
         self.base_url = "https://graph.facebook.com/v18.0"
         self.log_file = Path(Config.DATA_DIR) / 'published_log.json'
         self.published = self._load_log()
+        self.dry_run = False
 
     def _load_log(self):
         if self.log_file.exists():
@@ -219,7 +221,12 @@ class InstagramPoster:
                     fact['title']
                 )
                 print(f"📹 Видео: {video_url}")
-                self._publish_media(video_url, caption, 'VIDEO')
+                if not self.dry_run:
+                    self._publish_media(video_url, caption, 'VIDEO')
+                else:
+                    print("🔍 [Dry-run] Публикация отключена.")
+                    print(f"   Caption: {caption[:300]}...")
+                    print(f"   Video URL: {video_url}")
             except Exception as e:
                 print(f"❌ Ошибка Reels: {e}")
                 return
@@ -232,8 +239,13 @@ class InstagramPoster:
 
                 if public_url:
                     try:
-                        self._publish_media(public_url, caption, 'IMAGE')
-                        print(f"✅ Пост опубликован")
+                        if not self.dry_run:
+                            self._publish_media(public_url, caption, 'IMAGE')
+                            print(f"✅ Пост опубликован")
+                        else:
+                            print("🔍 [Dry-run] Публикация отключена.")
+                            print(f"   Caption: {caption[:300]}...")
+                            print(f"   Image URL: {public_url}")
                     except Exception as e:
                         print(f"❌ Ошибка публикации: {e}")
                         return
@@ -251,4 +263,9 @@ class InstagramPoster:
 
 
 if __name__ == "__main__":
-    InstagramPoster().run()
+    dry_run = "--dry-run" in sys.argv or os.getenv('DRY_RUN', 'false').lower() == 'true'
+    poster = InstagramPoster()
+    poster.dry_run = dry_run
+    if dry_run:
+        print("🔍 Режим dry-run — публикация в Instagram отключена")
+    poster.run()

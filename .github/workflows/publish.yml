@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 10 * * *'   # 10:00 UTC ежедневно
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Запустить в режиме dry-run (без публикации)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   publish:
@@ -14,7 +23,14 @@ jobs:
         with:
           python-version: '3.10'
       - run: pip install -r requirements.txt
-      - run: python src/post_to_instagram.py
+      - name: Run script
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+            echo "🔍 Dry-run mode enabled"
+            python src/post_to_instagram.py --dry-run
+          else
+            python src/post_to_instagram.py
+          fi
         env:
           SOCIALPOSTER: ${{ secrets.SOCIALPOSTER }}
           INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
