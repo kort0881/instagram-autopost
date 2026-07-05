@@ -2,6 +2,7 @@
 import sys
 import json
 import random
+import time
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -150,28 +151,49 @@ class InstagramPoster:
         return None
 
     def _publish_media(self, media_url, caption, media_type='VIDEO'):
-        params = {
+        payload = {
             "media_type": media_type,
             "caption": caption,
             "access_token": Config.INSTAGRAM_ACCESS_TOKEN
         }
-        params["video_url" if media_type == 'VIDEO' else "image_url"] = media_url
+        payload["video_url" if media_type == 'VIDEO' else "image_url"] = media_url
 
+        print(f"  → Создание контейнера ({media_type})...")
         container = requests.post(
             f"{self.base_url}/{Config.INSTAGRAM_USER_ID}/media",
-            params=params,
-            timeout=30
+            data=payload,
+            timeout=60
         )
-        container.raise_for_status()
-        creation_id = container.json()['id']
+        if not container.ok:
+            print(f"  ❌ Ошибка создания контейнера: {container.status_code}")
+            print(f"  🔍 Ответ: {container.text}")
+            container.raise_for_status()
 
+        creation_id = container.json().get('id')
+        if not creation_id:
+            raise Exception(f"Нет id в ответе на создание контейнера: {container.json()}")
+        print(f"  ✅ Контейнер создан: {creation_id}")
+
+        # Для видео — ждём обработки Instagram
+        if media_type == 'VIDEO':
+            wait = getattr(Config, 'VIDEO_PUBLISH_DELAY', 30)
+            print(f"  ⏳ Ожидание {wait}с для обработки видео Instagram...")
+            time.sleep(wait)
+
+        print(f"  → Публикация контейнера {creation_id}...")
         publish = requests.post(
             f"{self.base_url}/{Config.INSTAGRAM_USER_ID}/media_publish",
-            params={"creation_id": creation_id, "access_token": Config.INSTAGRAM_ACCESS_TOKEN},
-            timeout=30
+            data={"creation_id": creation_id, "access_token": Config.INSTAGRAM_ACCESS_TOKEN},
+            timeout=60
         )
-        publish.raise_for_status()
-        return publish.json()
+        if not publish.ok:
+            print(f"  ❌ Ошибка публикации: {publish.status_code}")
+            print(f"  🔍 Ответ: {publish.text}")
+            publish.raise_for_status()
+
+        result = publish.json()
+        print(f"  ✅ Опубликовано: {result.get('id')}")
+        return result
 
     def run(self):
         print(f"🚀 Запуск {datetime.now()}")

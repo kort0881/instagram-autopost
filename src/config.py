@@ -8,6 +8,9 @@ class Config:
     INSTAGRAM_ACCESS_TOKEN = os.getenv('SOCIALPOSTER')
     INSTAGRAM_USER_ID = os.getenv('INSTAGRAM_USER_ID')
 
+    # Задержка перед публикацией видео (сек) — пока Instagram обработает файл
+    VIDEO_PUBLISH_DELAY = int(os.getenv('VIDEO_PUBLISH_DELAY', '30'))
+
     # Agnes
     AGNES_API_KEY = os.getenv('AGNES_API_KEY')
 
