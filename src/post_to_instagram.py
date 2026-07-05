@@ -152,13 +152,14 @@ class InstagramPoster:
                 return url
         return None
 
-    def _publish_media(self, media_url, caption, media_type='VIDEO'):
+    def _publish_media(self, media_url, caption, media_type='REELS'):
+        is_video = media_type in ('VIDEO', 'REELS')
         payload = {
             "media_type": media_type,
             "caption": caption,
             "access_token": Config.INSTAGRAM_ACCESS_TOKEN
         }
-        payload["video_url" if media_type == 'VIDEO' else "image_url"] = media_url
+        payload["video_url" if is_video else "image_url"] = media_url
 
         print(f"  → Создание контейнера ({media_type})...")
         container = requests.post(
@@ -177,7 +178,7 @@ class InstagramPoster:
         print(f"  ✅ Контейнер создан: {creation_id}")
 
         # Для видео — ждём обработки Instagram
-        if media_type == 'VIDEO':
+        if is_video:
             wait = getattr(Config, 'VIDEO_PUBLISH_DELAY', 30)
             print(f"  ⏳ Ожидание {wait}с для обработки видео Instagram...")
             time.sleep(wait)
@@ -222,7 +223,7 @@ class InstagramPoster:
                 )
                 print(f"📹 Видео: {video_url}")
                 if not self.dry_run:
-                    self._publish_media(video_url, caption, 'VIDEO')
+                    self._publish_media(video_url, caption, 'REELS')
                 else:
                     print("🔍 [Dry-run] Публикация отключена.")
                     print(f"   Caption: {caption[:300]}...")
