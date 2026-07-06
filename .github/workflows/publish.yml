@@ -14,28 +14,54 @@ on:
           - 'false'
           - 'true'
 
+env:
+  PYTHON_VERSION: '3.12'
+
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - run: pip install -r requirements.txt
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check required secrets
+        env:
+          TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+          AGNES: ${{ secrets.AGNES_API_KEY }}
+        run: |
+          MISSING=""
+          [ -z "$TOKEN" ] && MISSING="$MISSING INSTAGRAM_ACCESS_TOKEN"
+          [ -z "$USER_ID" ] && MISSING="$MISSING INSTAGRAM_USER_ID"
+          [ -z "$AGNES" ] && MISSING="$MISSING AGNES_API_KEY"
+          if [ -n "$MISSING" ]; then
+            echo "❌ MISSING SECRETS:$MISSING"
+            exit 1
+          fi
+          echo "✅ All required secrets are set"
+
       - name: Run script
         run: |
-          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+          DRY="${{ github.event.inputs.dry_run }}"
+          if [ "$DRY" == "true" ]; then
             echo "🔍 Dry-run mode enabled"
             python src/post_to_instagram.py --dry-run
           else
             python src/post_to_instagram.py
           fi
         env:
-          SOCIALPOSTER: ${{ secrets.SOCIALPOSTER }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
           AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
           PINTEREST_ACCESS_TOKEN: ${{ secrets.PINTEREST_ACCESS_TOKEN }}
           CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
           CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
           CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}

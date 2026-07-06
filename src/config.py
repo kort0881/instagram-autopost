@@ -5,7 +5,7 @@ load_dotenv()
 
 class Config:
     # Instagram
-    INSTAGRAM_ACCESS_TOKEN = os.getenv('SOCIALPOSTER')
+    INSTAGRAM_ACCESS_TOKEN = os.getenv('INSTAGRAM_ACCESS_TOKEN')
     INSTAGRAM_USER_ID = os.getenv('INSTAGRAM_USER_ID')
 
     # Задержка перед публикацией видео (сек) — пока Instagram обработает файл
@@ -32,7 +32,7 @@ class Config:
     def validate(cls):
         missing = []
         if not cls.INSTAGRAM_ACCESS_TOKEN:
-            missing.append('SOCIALPOSTER')
+            missing.append('INSTAGRAM_ACCESS_TOKEN')
         if not cls.INSTAGRAM_USER_ID:
             missing.append('INSTAGRAM_USER_ID')
         if not cls.AGNES_API_KEY:
