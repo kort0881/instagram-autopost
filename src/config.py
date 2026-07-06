@@ -5,7 +5,8 @@ load_dotenv()
 
 class Config:
     # Instagram
-    INSTAGRAM_ACCESS_TOKEN = os.getenv('INSTAGRAM_ACCESS_TOKEN')
+    # Читаем INSTAGRAM_ACCESS_TOKEN; если пусто — fallback на SOCIALPOSTER (старое имя)
+    INSTAGRAM_ACCESS_TOKEN = os.getenv('INSTAGRAM_ACCESS_TOKEN') or os.getenv('SOCIALPOSTER')
     INSTAGRAM_USER_ID = os.getenv('INSTAGRAM_USER_ID')
 
     # Задержка перед публикацией видео (сек) — пока Instagram обработает файл

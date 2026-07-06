@@ -34,11 +34,13 @@ jobs:
       - name: Check required secrets
         env:
           TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          TOKEN_OLD: ${{ secrets.SOCIALPOSTER }}
           USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
           AGNES: ${{ secrets.AGNES_API_KEY }}
         run: |
+          TOKEN_VAL="${TOKEN:-$TOKEN_OLD}"
           MISSING=""
-          [ -z "$TOKEN" ] && MISSING="$MISSING INSTAGRAM_ACCESS_TOKEN"
+          [ -z "$TOKEN_VAL" ] && MISSING="$MISSING INSTAGRAM_ACCESS_TOKEN"
           [ -z "$USER_ID" ] && MISSING="$MISSING INSTAGRAM_USER_ID"
           [ -z "$AGNES" ] && MISSING="$MISSING AGNES_API_KEY"
           if [ -n "$MISSING" ]; then
@@ -58,6 +60,7 @@ jobs:
           fi
         env:
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          SOCIALPOSTER: ${{ secrets.SOCIALPOSTER }}
           INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
           AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
           PINTEREST_ACCESS_TOKEN: ${{ secrets.PINTEREST_ACCESS_TOKEN }}
