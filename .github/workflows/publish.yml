@@ -13,6 +13,14 @@ on:
         options:
           - 'false'
           - 'true'
+      prepare_only:
+        description: 'Только подготовка (DeepSeek mock, без Agnes и Instagram)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   PYTHON_VERSION: '3.12'
@@ -33,26 +41,37 @@ jobs:
 
       - name: Check required secrets
         env:
-          TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
-          TOKEN_OLD: ${{ secrets.SOCIALPOSTER }}
+          IG_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          IG_TOKEN_OLD: ${{ secrets.SOCIALPOSTER }}
           USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
           AGNES: ${{ secrets.AGNES_API_KEY }}
+          DS_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          TOKEN_VAL="${TOKEN:-$TOKEN_OLD}"
+          TOKEN_VAL="${IG_TOKEN:-$IG_TOKEN_OLD}"
           MISSING=""
-          [ -z "$TOKEN_VAL" ] && MISSING="$MISSING INSTAGRAM_ACCESS_TOKEN"
-          [ -z "$USER_ID" ] && MISSING="$MISSING INSTAGRAM_USER_ID"
-          [ -z "$AGNES" ] && MISSING="$MISSING AGNES_API_KEY"
+          PREPARE="${{ github.event.inputs.prepare_only }}"
+          [ "$PREPARE" != "true" ] && {
+            [ -z "$TOKEN_VAL" ] && MISSING="$MISSING INSTAGRAM_ACCESS_TOKEN"
+            [ -z "$USER_ID" ] && MISSING="$MISSING INSTAGRAM_USER_ID"
+            [ -z "$AGNES" ] && MISSING="$MISSING AGNES_API_KEY"
+          }
+          [ -z "$DS_KEY" ] && echo "ℹ️  DEEPSEEK_API_KEY not set — LLM will use mock mode"
           if [ -n "$MISSING" ]; then
             echo "❌ MISSING SECRETS:$MISSING"
             exit 1
           fi
-          echo "✅ All required secrets are set"
+          echo "✅ Secrets check passed"
 
       - name: Run script
         run: |
+          PREPARE="${{ github.event.inputs.prepare_only }}"
           DRY="${{ github.event.inputs.dry_run }}"
-          if [ "$DRY" == "true" ]; then
+          ARGS=""
+          [ "$DRY" == "true" ] && ARGS="$ARGS --dry-run"
+          if [ "$PREPARE" == "true" ]; then
+            echo "⏸️  PREPARE-ONLY mode"
+            PREPARE_ONLY=true python src/post_to_instagram.py $ARGS
+          elif [ "$DRY" == "true" ]; then
             echo "🔍 Dry-run mode enabled"
             python src/post_to_instagram.py --dry-run
           else
@@ -63,8 +82,6 @@ jobs:
           SOCIALPOSTER: ${{ secrets.SOCIALPOSTER }}
           INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
           AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
-          PINTEREST_ACCESS_TOKEN: ${{ secrets.PINTEREST_ACCESS_TOKEN }}
-          CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
-          CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
-          CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          PREPARE_ONLY: ${{ github.event.inputs.prepare_only || 'false' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}

@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""Instagram Auto-Post — основной скрипт публикации.
+"""Instagram Auto-Post — основной скрипт публикации Reels.
 
-Pipeline: generate → validate → upload → publish → verify
+Pipeline: fact selector → DeepSeek LLM → Agnes video → Instagram publish → verify
+
+Режимы:
+  - dry-run: всё кроме Instagram API
+  - prepare-only: DeepSeek (или mock) + лог, без Agnes и Instagram
 """
 import os
 import sys
 import json
-import random
 import time
 import logging
 import requests
 from pathlib import Path
 from datetime import datetime, timezone
-from io import BytesIO
 
 from config import Config
 from content_generator import ContentGenerator
+from llm_client import LLMClient
 from agnes_client import AgnesClient
 
 # ── logging ──────────────────────────────────────────────────────────
@@ -42,7 +45,6 @@ def retry(max_retries=3, delay=2, backoff=2.0):
                     last_err = e
                     log.warning("  ⚠️ retry %d/%d (network): %s", attempt, max_retries, e)
                 except requests.exceptions.HTTPError as e:
-                    # 4xx — не retry, 5xx — retry
                     status = e.response.status_code if e.response is not None else 0
                     if 500 <= status < 600:
                         last_err = e
@@ -62,19 +64,12 @@ def retry(max_retries=3, delay=2, backoff=2.0):
 
 # ── InstagramPoster ──────────────────────────────────────────────────
 class InstagramPoster:
-    CATEGORY_IMAGES = {
-        "historical": "ancient+history+archaeology",
-        "science": "science+technology+discovery",
-        "mystery": "mysterious+dark+paranormal",
-        "archaeology": "excavation+ruins+artifacts",
-        "psychology": "brain+mind+consciousness",
-        "anatomy": "human+body+anatomy",
-    }
-
     def __init__(self, dry_run=False):
         Config.validate()
         self.generator = ContentGenerator()
-        self.agnes = AgnesClient()
+        self.llm = LLMClient()
+        self.agnes = AgnesClient() if not Config.PREPARE_ONLY else None
+        self.prepare_only = Config.PREPARE_ONLY
         self.base_url = "https://graph.facebook.com/v18.0"
         self.published_file = Path(Config.DATA_DIR) / "published_log.json"
         self.published = self._load_published()
@@ -93,161 +88,76 @@ class InstagramPoster:
         with open(self.published_file, "w", encoding="utf-8") as f:
             json.dump(self.published, f, ensure_ascii=False, indent=2)
 
-    def _already_published(self, title):
-        return any(item["title"] == title for item in self.published["items"])
-
-    def _mark_published(self, title, post_id=None, media_type=None, status="published", permalink=None):
-        self.published["items"].append({
+    def _mark_published(self, title, post_id=None, media_type="REELS", status="published",
+                        permalink=None, llm_output=None):
+        entry = {
             "title": title,
             "post_id": post_id,
             "media_type": media_type,
             "status": status,
             "published_at": datetime.now(timezone.utc).isoformat(),
             "permalink": permalink,
-        })
+        }
+        if llm_output:
+            entry["llm"] = {
+                "hook": llm_output.get("hook"),
+                "script": llm_output.get("script")[:200] if llm_output.get("script") else None,
+                "hashtags": llm_output.get("hashtags"),
+                "visual_prompt": llm_output.get("visual_prompt"),
+                "category": llm_output.get("category"),
+            }
+        self.published["items"].append(entry)
         self._save_published()
 
-    # ── stage 1: generate ────────────────────────────────────────────
+    # ── stage 1: pick fact ───────────────────────────────────────────
 
     def _pick_fact(self):
         exclude = [item["title"] for item in self.published["items"]
-                   if item["status"] in ("published",)]
+                   if item["status"] in ("published", "dry_run")]
         fact = self.generator.get_random_fact(exclude)
         if not fact:
             log.info("📭 Все факты опубликованы. На сегодня всё.")
             return None
         return fact
 
-    # ── stage 2: validate ────────────────────────────────────────────
+    # ── stage 2: LLM → Reels package ─────────────────────────────────
 
-    def _validate_fact(self, fact):
-        errors = []
-        if not fact.get("title") or len(fact["title"].strip()) < 3:
-            errors.append("title missing or too short")
-        if not fact.get("text") or len(fact["text"].strip()) < 10:
-            errors.append("text missing or too short")
-        if errors:
-            raise ValueError(f"Fact validation failed: {', '.join(errors)}")
-        return True
+    def _build_reel_package(self, fact):
+        """DeepSeek генерирует hook, script, caption, hashtags, visual_prompt."""
+        log.info("🧠 Reels package by %s (%s)...", self.llm.provider, self.llm.model)
+        package = self.llm.generate_reel_package(fact)
+        log.info("  📝 Hook: %s", package["hook"][:120])
+        log.info("  🏷️  Hashtags: %s", " ".join(package["hashtags"][:5]))
+        log.info("  📂 Category: %s", package["category"])
+        return package
 
-    # ── stage 3: generate media (reel video or post image) ───────────
+    # ── stage 3: generate video via Agnes (skip in prepare-only) ──────
 
-    def _generate_reel(self, fact):
+    def _generate_video(self, package):
+        """Генерация Reels видео через Agnes AI API."""
+        if self.prepare_only:
+            log.info("  ⏭️  PREPARE_ONLY — Agnes video generation skipped")
+            return None
+
+        prompt = package.get("visual_prompt") or f"{package['topic']}. {package.get('script', '')}"
         log.info("  → Generating Reels video via Agnes...")
-        video_url = self.agnes.generate_video(
-            f"{fact['title']}. {fact['text']}",
-            fact["title"],
-        )
+        video_url = self.agnes.generate_video(prompt, package["topic"])
         log.info("  ✅ Video URL: %s", video_url)
         return video_url
 
-    def _generate_post_image(self, fact):
-        from PIL import Image, ImageDraw, ImageFont  # noqa: lazy import
-        import textwrap
-
-        colors = {
-            "historical": (45, 55, 72),
-            "science": (30, 60, 80),
-            "mystery": (25, 20, 35),
-            "archaeology": (55, 45, 30),
-            "psychology": (40, 35, 55),
-            "anatomy": (50, 30, 35),
-        }
-        category = "historical"
-        for cat_key in colors:
-            if any(tag in fact.get("tags", []) for tag in [f"#{cat_key}", f"#{cat_key[:4]}"]):
-                category = cat_key
-                break
-
-        bg_color = colors.get(category, (30, 30, 40))
-        img = Image.new("RGB", (1080, 1080), bg_color)
-        draw = ImageDraw.Draw(img)
-
-        font_paths = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ]
-        font = None
-        for fp in font_paths:
-            if Path(fp).exists():
-                font = ImageFont.truetype(fp, 42)
-                break
-        if not font:
-            font = ImageFont.load_default()
-
-        # title
-        title = fact["title"][:120]
-        lines = textwrap.wrap(title, width=25)
-        y = 150
-        for line in lines[:4]:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            tw = bbox[2] - bbox[0]
-            draw.text(((1080 - tw) // 2, y), line, fill=(255, 255, 255), font=font)
-            y += 55
-
-        # body
-        y += 40
-        body_font = font
-        if Path(font_paths[1]).exists():
-            body_font = ImageFont.truetype(font_paths[1], 32)
-        text_lines = textwrap.wrap(fact["text"], width=35)
-        for line in text_lines[:12]:
-            bbox = draw.textbbox((0, 0), line, font=body_font)
-            tw = bbox[2] - bbox[0]
-            draw.text(((1080 - tw) // 2, y), line, fill=(220, 220, 220), font=body_font)
-            y += 40
-
-        output_path = (
-            Path(Config.DATA_DIR) / "posts" / f"post_{datetime.now().strftime('%Y%m%d%H%M%S')}.png"
-        )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        img.save(output_path, quality=95)
-        return str(output_path)
-
-    # ── stage 3b: upload image to hosting ────────────────────────────
-
-    def _upload_to_cloudinary(self, image_path):
-        if not Config.CLOUDINARY_CLOUD_NAME:
-            return None
-        try:
-            import cloudinary
-            import cloudinary.uploader
-            cloudinary.config(
-                cloud_name=Config.CLOUDINARY_CLOUD_NAME,
-                api_key=Config.CLOUDINARY_API_KEY,
-                api_secret=Config.CLOUDINARY_API_SECRET,
-            )
-            result = cloudinary.uploader.upload(
-                image_path, folder="instagram_autopost", resource_type="image"
-            )
-            url = result.get("secure_url")
-            log.info("  ☁️ Cloudinary: %s", url)
-            return url
-        except Exception as e:
-            log.warning("  ⚠️ Cloudinary error: %s", e)
-            return None
-
-    def _get_public_url(self, image_path):
-        if Config.CLOUDINARY_CLOUD_NAME:
-            return self._upload_to_cloudinary(image_path)
-        return None
-
-    # ── stage 4: publish to Instagram API ────────────────────────────
+    # ── stage 4: publish to Instagram (skip in dry-run/prepare-only) ──
 
     @retry(max_retries=3, delay=3, backoff=2.0)
-    def _publish_media(self, media_url, caption, media_type="REELS"):
-        is_video = media_type in ("VIDEO", "REELS")
-        payload = {
-            "media_type": media_type,
-            "caption": caption,
-            "access_token": Config.INSTAGRAM_ACCESS_TOKEN,
-        }
-        payload["video_url" if is_video else "image_url"] = media_url
-
-        log.info("  → Creating %s container...", media_type)
+    def _publish_media(self, media_url, caption):
+        log.info("  → Creating REELS container...")
         resp = requests.post(
             f"{self.base_url}/{Config.INSTAGRAM_USER_ID}/media",
-            data=payload,
+            data={
+                "media_type": "REELS",
+                "video_url": media_url,
+                "caption": caption,
+                "access_token": Config.INSTAGRAM_ACCESS_TOKEN,
+            },
             timeout=60,
         )
         resp.raise_for_status()
@@ -256,11 +166,10 @@ class InstagramPoster:
             raise RuntimeError(f"No container id: {resp.json()}")
         log.info("  ✅ Container created: %s", creation_id)
 
-        # video: wait for processing
-        if is_video:
-            delay = Config.VIDEO_PUBLISH_DELAY
-            log.info("  ⏳ Waiting %ds for Instagram processing...", delay)
-            time.sleep(delay)
+        # wait for video processing
+        delay = Config.VIDEO_PUBLISH_DELAY
+        log.info("  ⏳ Waiting %ds for Instagram processing...", delay)
+        time.sleep(delay)
 
         log.info("  → Publishing container %s...", creation_id)
         pub = requests.post(
@@ -299,81 +208,77 @@ class InstagramPoster:
     def run(self):
         log.info("🚀 Instagram Auto-Post — start")
 
-        # 1. choose post type
-        post_type = random.choices(["reel", "post"], weights=[0.9, 0.1])[0]
-
-        # 2. generate
+        # 1. pick fact
         fact = self._pick_fact()
         if not fact:
+            if self.prepare_only:
+                log.info("📭 Все факты использованы (prepare-only — это нормально)")
             return
 
-        # 3. validate
-        self._validate_fact(fact)
         log.info("📄 Fact: %s", fact["title"])
 
-        # 4. caption
-        caption = self.generator.generate_caption(fact, post_type)
+        # 2. LLM → Reels package
+        try:
+            package = self._build_reel_package(fact)
+        except Exception as e:
+            log.error("❌ LLM package failed: %s", e)
+            self._mark_published(fact["title"], status=f"llm_error: {e}")
+            return
 
-        # 5. media generation + publish
-        if post_type == "reel":
-            log.info("🎬 Reels pipeline")
-            try:
-                video_url = self._generate_reel(fact)
-                if self.dry_run:
-                    log.info("🔍 [DRY-RUN] Would publish REELS")
-                    log.info("   caption: %s...", caption[:200])
-                    log.info("   video: %s", video_url)
-                    self._mark_published(fact["title"], media_type="REELS", status="dry_run")
-                    return
+        # 3. prepare-only — только лог, без Agnes и Instagram
+        if self.prepare_only:
+            log.info("⏸️  PREPARE_ONLY — всё готово, публикация отложена")
+            log.info("   hook: %s", package["hook"])
+            log.info("   caption start: %s...", package["caption"][:200])
+            log.info("   hashtags: %s", " ".join(package["hashtags"]))
+            log.info("   visual_prompt: %s", package["visual_prompt"][:200])
+            self._mark_published(fact["title"], media_type="REELS",
+                                 status="prepared", llm_output=package)
+            log.info("✅ Prepared (logged, not published)")
+            return
 
-                result = self._publish_media(video_url, caption, "REELS")
-                media_id = result.get("id")
-                permalink = self._verify_post(media_id)
-                self._mark_published(fact["title"], media_id, "REELS", "published", permalink)
-                log.info("✅ Done: %s", fact["title"])
+        # 4. generate video
+        try:
+            video_url = self._generate_video(package)
+            if not video_url and not self.dry_run:
+                log.error("❌ Video generation failed, no URL")
+                self._mark_published(fact["title"], status="failed_generation", llm_output=package)
+                return
+        except Exception as e:
+            log.error("❌ Video generation failed: %s", e)
+            self._mark_published(fact["title"], status=f"failed_generation: {e}", llm_output=package)
+            return
 
-            except Exception as e:
-                log.error("❌ Reels pipeline failed: %s", e)
-                self._mark_published(fact["title"], media_type="REELS", status=f"error: {e}")
-                raise
+        # 5. publish or dry-run
+        caption = package["caption"]
+        if self.dry_run:
+            log.info("🔍 [DRY-RUN] Would publish REELS")
+            log.info("   caption: %s...", caption[:300])
+            log.info("   video: %s", video_url)
+            self._mark_published(fact["title"], media_type="REELS",
+                                 status="dry_run", llm_output=package)
+            return
 
-        else:
-            log.info("📸 Image post pipeline")
-            try:
-                image_path = self._generate_post_image(fact)
-                if not image_path:
-                    log.warning("⚠️ Image not generated, skipping")
-                    return
-
-                public_url = self._get_public_url(image_path)
-                if not public_url:
-                    log.warning("⚠️ No image hosting configured, skipping post")
-                    log.info("📝 Set Cloudinary secrets for image upload")
-                    return
-
-                if self.dry_run:
-                    log.info("🔍 [DRY-RUN] Would publish IMAGE")
-                    log.info("   caption: %s...", caption[:200])
-                    log.info("   image: %s", public_url)
-                    self._mark_published(fact["title"], media_type="IMAGE", status="dry_run")
-                    return
-
-                result = self._publish_media(public_url, caption, "IMAGE")
-                media_id = result.get("id")
-                permalink = self._verify_post(media_id)
-                self._mark_published(fact["title"], media_id, "IMAGE", "published", permalink)
-                log.info("✅ Done: %s", fact["title"])
-
-            except Exception as e:
-                log.error("❌ Image pipeline failed: %s", e)
-                self._mark_published(fact["title"], media_type="IMAGE", status=f"error: {e}")
-                raise
+        try:
+            result = self._publish_media(video_url, caption)
+            media_id = result.get("id")
+            permalink = self._verify_post(media_id)
+            self._mark_published(fact["title"], media_id, "REELS",
+                                 "published", permalink, llm_output=package)
+            log.info("✅ Done: %s", fact["title"])
+        except Exception as e:
+            log.error("❌ Publish failed: %s", e)
+            self._mark_published(fact["title"], status=f"publish_error: {e}", llm_output=package)
 
 
 # ── entry point ──────────────────────────────────────────────────────
 if __name__ == "__main__":
     dry_run = "--dry-run" in sys.argv or os.getenv("DRY_RUN", "false").lower() == "true"
+    prepare_only = Config.PREPARE_ONLY
+
     poster = InstagramPoster(dry_run=dry_run)
     if dry_run:
-        log.info("🔍 DRY-RUN mode — no real publishing")
+        log.info("🔍 DRY-RUN mode — no Instagram publishing")
+    if prepare_only:
+        log.info("⏸️  PREPARE-ONLY mode — no Agnes, no Instagram")
     poster.run()
